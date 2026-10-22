@@ -89,6 +89,10 @@ Party marginals are beta-binomial. The model evaluates their masses in log space
 
 **The tracked lists are assumed to be disjoint and exhaustive.** No untracked “other” category is inferred. Merger and joint-list market rules must be checked against that assumption. The model does not simulate the electoral threshold, surplus-vote agreements, or official seat-allocation mechanics, and may assign mass to 1–3 seats. Expected seats add across parties; variances do not, because parties share a fixed total.
 
+**Known coverage gap (checked October 22, 2026):** המילואימניקים והכלכלית / Reservists–New Economic Party has a [vote-share market](https://polymarket.com/event/israel-election-reservistsnew-economic-party-vote-share) and a separate [Knesset-entry market](https://polymarket.com/event/which-parties-will-win-a-seat-in-the-2026-knesset-elections), but no seat-bracket event was found. It is omitted from the current seat fit. Results therefore condition on all 120 seats going to the tracked lists; this is a substantive coverage limitation, disclosed in the UI and exports. Vote percentages cannot be read as seat brackets without modeling the electoral threshold and seat allocation.
+
+The coalition selector and market details sort parties by fitted expected seats, descending, and update their order when prices refresh. Sorting uses the full-precision mean; displayed means are rounded to one decimal place.
+
 The chart shows up to approximately the 99.5th percentile, capped at 120, and labels omitted mass; summaries and exports retain the full 0–120 support. Model references: [SciPy Dirichlet–multinomial](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.dirichlet_multinomial.html), [beta-binomial formula](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.betabinom.html).
 
 ## Data and reproducibility
