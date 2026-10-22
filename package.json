@@ -7,8 +7,13 @@
   },
   "scripts": {
     "install:ci": "node scripts/install-ci.mjs",
+    "predev": "node scripts/write-market-snapshot.mjs",
     "dev": "node scripts/run-framework.mjs dev",
+    "prebuild": "node scripts/write-market-snapshot.mjs",
     "build": "node scripts/run-framework.mjs build",
+    "build:cloud": "node scripts/write-market-snapshot.mjs && next build --webpack",
+    "deploy:gcloud": "bash scripts/deploy-gcloud.sh",
+    "deploy:hosting": "node scripts/deploy-hosting.mjs personal-383909 personal-383909-coalition poly2026poll.kanhar.art",
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
