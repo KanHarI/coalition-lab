@@ -1,5 +1,6 @@
-/** Pure probability model. Dependence strategies implement the same combine interface. */
-export type TailMode = "full" | "adjacent";
+/** Market parsing and summaries for a joint Dirichlet–multinomial seat model. */
+import { dirichletCoalition, type DirichletFit } from "./dirichlet.ts";
+export { fitDirichlet as fitPartyModel, dirichletCoalition as coalitionDistribution, type DirichletFit, type DirichletPartyFit } from "./dirichlet.ts";
 export type Bucket = { label: string; low: number; high: number; open: "lower" | "upper" | null; price: number; probability: number };
 export type PartyMarket = { id: string; slug: string; name: string; color: string; buckets: Bucket[]; priceSum: number; volume: number; updatedAt: string | null; closed: boolean; rules: string };
 export type MarketData = { parties: PartyMarket[]; fetchedAt: string; source: "live" | "snapshot"; warning?: string };
@@ -74,38 +75,9 @@ export function parseEvent(input: unknown): PartyMarket {
   return { id, slug: event.slug, ...PARTY_META[id], buckets, priceSum, volume: Number(event.volume) || 0, updatedAt: typeof event.updatedAt === "string" ? event.updatedAt : null, closed: event.closed === true, rules: typeof event.description === "string" ? event.description : "" };
 }
 
-export function effectiveRange(bucket: Bucket, buckets: Bucket[], tailMode: TailMode) {
-  if (tailMode === "full" || !bucket.open) return { low: bucket.low, high: bucket.high };
-  const bounded = buckets.filter(b => !b.open);
-  const neighbor = bucket.open === "lower" ? bounded[0] : bounded.at(-1);
-  const width = neighbor ? neighbor.high - neighbor.low + 1 : 1;
-  return bucket.open === "lower"
-    ? { low: bucket.high < 4 ? 0 : Math.max(0, bucket.high - width + 1), high: bucket.high }
-    : { low: bucket.low, high: Math.min(120, bucket.low + width - 1) };
+export function partyDistribution(fit: DirichletFit, partyId: string): Distribution {
+  return dirichletCoalition(fit, [partyId]);
 }
-
-export function partyDistribution(party: PartyMarket, tailMode: TailMode): Distribution {
-  const pmf = Array(121).fill(0) as number[];
-  for (const bucket of party.buckets) {
-    const { low, high } = effectiveRange(bucket, party.buckets, tailMode);
-    for (let seat = low; seat <= high; seat++) pmf[seat] += bucket.probability / (high - low + 1);
-  }
-  return pmf;
-}
-
-export function convolve(a: Distribution, b: Distribution): Distribution {
-  const result = Array(a.length + b.length - 1).fill(0) as number[];
-  for (let i = 0; i < a.length; i++) if (a[i]) {
-    for (let j = 0; j < b.length; j++) if (b[j]) result[i + j] += a[i] * b[j];
-  }
-  return result;
-}
-
-export interface DependenceModel { id: string; combine: (distributions: Distribution[]) => Distribution }
-export const independentModel: DependenceModel = {
-  id: "independent-v1",
-  combine: distributions => distributions.reduce(convolve, [1]),
-};
 
 export function quantile(pmf: Distribution, probability: number): number {
   let cumulative = 0;
@@ -124,11 +96,6 @@ export function summarize(pmf: Distribution, target = 61) {
     majority: pmf.slice(target).reduce((a, b) => a + b, 0),
     over120: pmf.slice(121).reduce((a, b) => a + b, 0),
   };
-}
-
-export function coalitionDistribution(parties: PartyMarket[], selected: string[], tails: TailMode, model: DependenceModel = independentModel) {
-  const ids = new Set(selected);
-  return model.combine(parties.filter(p => ids.has(p.id)).map(p => partyDistribution(p, tails)));
 }
 
 export function sortParties(parties: PartyMarket[]) {

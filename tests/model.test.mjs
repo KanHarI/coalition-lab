@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseRange, parseEvent, partyDistribution, convolve, coalitionDistribution, summarize, effectiveRange } from '../lib/model.ts';
+import { parseRange, parseEvent, fitPartyModel, partyDistribution, coalitionDistribution, summarize } from '../lib/model.ts';
 const snapshot = JSON.parse(readFileSync(new URL('../data/snapshot.json', import.meta.url)));
 const parties = snapshot.events.map(parseEvent);
+const fit = fitPartyModel(parties);
 const close = (a, b, tolerance = 1e-10) => assert.ok(Math.abs(a - b) < tolerance, `${a} ≠ ${b}`);
 const sum = a => a.reduce((x, y) => x + y, 0);
 
@@ -15,19 +16,29 @@ test('range parsing supports exact seats, inclusive ranges and open tails', () =
   for (const label of ['a lot', '122+', '9-8', '<0']) assert.throws(() => parseRange(label));
 });
 
-test('real market snapshots form complete, normalized distributions in both tail modes', () => {
+test('real market snapshot fits normalized, finite party marginals sharing 120 seats', () => {
   assert.equal(parties.length, 12);
-  for (const party of parties) for (const mode of ['full', 'adjacent']) {
+  assert.equal(fit.model, 'dirichlet-multinomial-v1');
+  const means = [];
+  for (const party of parties) {
     close(sum(party.buckets.map(b => b.probability)), 1);
-    const pmf = partyDistribution(party, mode);
+    const pmf = partyDistribution(fit, party.id);
+    assert.equal(pmf.length, 121);
     close(sum(pmf), 1);
     assert.ok(pmf.every(p => Number.isFinite(p) && p >= 0));
-    for (const b of party.buckets) {
-      close(sum(pmf.slice(b.low, b.high + 1)), b.probability);
-      const { low, high } = effectiveRange(b, party.buckets, mode);
-      close(pmf[low], pmf[high]);
+    const fitted = fit.parties.find(p => p.id === party.id);
+    assert.ok(fitted.alpha > 0);
+    for (const [i, bucket] of party.buckets.entries()) {
+      close(sum(pmf.slice(bucket.low, bucket.high + 1)), fitted.probabilities[i]);
+      close(fitted.probabilities[i] - bucket.probability, fitted.residuals[i]);
     }
+    means.push(summarize(pmf).mean);
   }
+  close(sum(means), 120);
+  close(sum(fit.parties.map(p => p.alpha)), fit.concentration, 1e-8);
+  assert.ok(Number.isFinite(fit.rmse));
+  assert.ok(fit.converged);
+  assert.ok(fit.warnings.some(w => w.includes('multinomial limit')));
 });
 
 test('Yes price is found by outcome label, not position; zero is valid', () => {
@@ -59,26 +70,31 @@ test('incomplete and overlapping market partitions fail validation', () => {
   assert.throws(() => parseEvent(duplicate));
 });
 
-test('convolution matches enumerated dice outcomes', () => {
-  const die = [0, 1/6, 1/6, 1/6, 1/6, 1/6, 1/6];
-  const actual = convolve(die, die);
-  const counts = Array(13).fill(0);
-  for (let a = 1; a <= 6; a++) for (let b = 1; b <= 6; b++) counts[a + b]++;
-  actual.forEach((p, i) => close(p, counts[i] / 36));
-  close(summarize(actual).mean, 7);
-  close(summarize(actual).variance, 35/6);
+test('coalitions share a fixed 120 seats and include negative party covariance', () => {
+  const all = coalitionDistribution(fit, parties.map(p => p.id));
+  assert.equal(all.length, 121);
+  assert.equal(all[120], 1);
+  const stats = summarize(all);
+  assert.equal(stats.mean, 120);
+  assert.equal(stats.variance, 0);
+  assert.equal(stats.over120, 0);
+  assert.equal(stats.low, 120);
+  assert.equal(stats.high, 120);
+  const ids = ['likud', 'shas'];
+  const coalition = summarize(coalitionDistribution(fit, ids));
+  const singles = ids.map(id => summarize(partyDistribution(fit, id)));
+  close(coalition.mean, sum(singles.map(p => p.mean)));
+  const shares = ids.map(id => fit.parties.find(p => p.id === id).share);
+  const covariance = -120 * shares[0] * shares[1] * (120 + fit.concentration) / (1 + fit.concentration);
+  close(coalition.variance, sum(singles.map(p => p.variance)) + 2 * covariance);
+  assert.ok(coalition.variance < sum(singles.map(p => p.variance)));
 });
 
-test('independent coalition mean and variance are additive; no 120-seat clipping', () => {
-  const selected = parties.map(p => p.id);
-  const pmf = coalitionDistribution(parties, selected, 'full');
-  const stats = summarize(pmf);
-  const singles = parties.map(p => summarize(partyDistribution(p, 'full')));
-  close(sum(pmf), 1);
-  close(stats.mean, sum(singles.map(p => p.mean)));
-  close(stats.variance, sum(singles.map(p => p.variance)), 1e-8);
-  assert.ok(stats.over120 > 0);
-  assert.ok(pmf.length > 121);
+test('complementary coalitions mirror each other around 120', () => {
+  const ids = ['likud', 'shas', 'utj'];
+  const pmf = coalitionDistribution(fit, ids);
+  const complement = coalitionDistribution(fit, parties.filter(p => !ids.includes(p.id)).map(p => p.id));
+  pmf.forEach((p, n) => close(p, complement[120 - n]));
 });
 
 test('61-seat threshold is inclusive, discrete quantiles are exact', () => {
@@ -90,13 +106,11 @@ test('61-seat threshold is inclusive, discrete quantiles are exact', () => {
   assert.equal(stats.high, 62);
 });
 
-test('empty selection has zero seats, and repeated IDs do not double count', () => {
-  assert.deepEqual(coalitionDistribution(parties, [], 'full'), [1]);
-  assert.equal(summarize([1]).majority, 0);
-  assert.deepEqual(coalitionDistribution(parties, ['likud', 'likud'], 'full'), partyDistribution(parties.find(p => p.id === 'likud'), 'full'));
-});
-
-test('the dependence strategy is replaceable independently of market reconstruction', () => {
-  const custom = { id: 'fixture', combine: distributions => { assert.equal(distributions.length, 2); return [0, 1]; } };
-  assert.deepEqual(coalitionDistribution(parties, ['likud', 'shas'], 'full', custom), [0, 1]);
+test('empty and unknown selections have zero seats; repeated IDs do not double count', () => {
+  const empty = coalitionDistribution(fit, []);
+  assert.equal(empty[0], 1);
+  assert.equal(sum(empty), 1);
+  assert.equal(summarize(empty).majority, 0);
+  assert.deepEqual(coalitionDistribution(fit, ['unknown']), empty);
+  assert.deepEqual(coalitionDistribution(fit, ['likud', 'likud']), partyDistribution(fit, 'likud'));
 });
